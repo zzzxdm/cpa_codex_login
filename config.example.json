@@ -1,0 +1,30 @@
+{
+  "cpa": {
+    "url": "http://127.0.0.1:8317",
+    "management_key": "replace-with-cpa-management-key"
+  },
+  "accounts_file": "accounts.txt",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8765,
+    "admin_password": ""
+  },
+  "browser": {
+    "open_browser": false,
+    "channel": "chromium",
+    "mode": "headless"
+  },
+  "two_factor": {
+    "mode": "local",
+    "page_url": "https://2fa.kim/",
+    "api_url": "https://2fa.kim/api/2fa={SECRET_KEY}",
+    "method": "GET",
+    "code_field": "code",
+    "request_body": {},
+    "headers": {},
+    "timeout": 10
+  },
+  "auth_concurrency": 4,
+  "auto_reauth": false,
+  "auto_reauth_interval": 60
+}

@@ -1,0 +1,2 @@
+# One account per line: email----password----TOTP secret
+account@example.com----replace-with-password----BASE32-TOTP-SECRET

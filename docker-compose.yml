@@ -1,6 +1,7 @@
 services:
   cpa-codex-login:
     build: .
+    image: cpa-codex-login:latest
     container_name: cpa-codex-login
     restart: unless-stopped
     extra_hosts:

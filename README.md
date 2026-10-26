@@ -156,3 +156,22 @@ docker compose up -d
 ```
 
 然后访问 `http://服务器地址:8765/`。认证使用 Xvfb 虚拟显示器运行 headed Chromium，避免纯 headless 浏览器被 Cloudflare 拦截。建议只在内网开放此端口，或通过 HTTPS 反向代理保护；配置文件包含账号密码、TOTP 密钥和 CPA 管理密钥，不要提交到 Git。
+
+GitHub Actions 会在推送 `main`、推送 `v*` 标签或手动运行时生成镜像文件。进入仓库的 Actions，选择 **Build Docker image files**，在成功运行的 Artifacts 中下载服务器对应架构的文件：
+
+- `cpa-codex-login-linux-amd64`：Intel / AMD x86_64 服务器。
+- `cpa-codex-login-linux-arm64`：ARM64 服务器或 Apple Silicon 的 Docker 环境。
+
+每份 Artifact 包含 `.tar.gz` 镜像和 `.sha256` 校验文件，保留 3 天。下载并解压 Artifact 后，在服务器项目目录执行（以下以 amd64 为例）：
+
+```bash
+sha256sum -c cpa-codex-login-linux-amd64.tar.gz.sha256
+docker load --input cpa-codex-login-linux-amd64.tar.gz
+test -f config.json || cp config.example.json config.json
+test -f accounts.txt || cp accounts.example.txt accounts.txt
+test -f .env || cp .env.example .env
+# 编辑 config.json、accounts.txt 和 .env。
+docker compose up -d --no-build
+```
+
+导入的镜像名为 `cpa-codex-login:latest`，Compose 已使用同名镜像；`--no-build` 会直接使用下载的镜像，无需在服务器重新构建。工作流使用 GitHub 自带的权限，不需要额外配置 Docker Hub 密钥。镜像构建目录只包含代码和示例文件，实际账号、密钥、配置及运行数据不会发送到构建上下文。

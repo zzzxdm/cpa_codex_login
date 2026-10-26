@@ -1,0 +1,118 @@
+name: Build Docker image files
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: cpa-codex-login
+  DOCKER_BUILD_RECORD_UPLOAD: 'false'
+
+jobs:
+  build:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and export image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/cpa-codex-login-linux-${{ matrix.arch }}.tar
+          provenance: false
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Verify image and browser runtime
+        env:
+          ARCHIVE: ${{ runner.temp }}/cpa-codex-login-linux-${{ matrix.arch }}.tar
+        run: |
+          docker load --input "$ARCHIVE"
+          docker run --rm -i --entrypoint python "${IMAGE_NAME}:latest" <<'PY'
+          import shutil
+          from pathlib import Path
+          import app
+          import admin_auth
+          import dashboard
+          from playwright.sync_api import sync_playwright
+
+          assert shutil.which('Xvfb'), 'Xvfb is missing'
+          assert shutil.which('xauth'), 'xauth is missing'
+          for name in ('.env', 'config.json', 'accounts.txt', 'data', '.git', '.venv'):
+              assert not Path('/app', name).exists(), f'Private file included: {name}'
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.set_content('<title>Image smoke test</title>')
+              assert page.title() == 'Image smoke test'
+              browser.close()
+          print('Python modules and Chromium runtime are ready')
+          PY
+          docker image rm "${IMAGE_NAME}:latest" "${IMAGE_NAME}:sha-${GITHUB_SHA}"
+
+      - name: Compress archive and create checksum
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cd "$OUTPUT_DIR"
+          archive="${IMAGE_NAME}-linux-${ARCH}.tar"
+          gzip -1 "$archive"
+          sha256sum "${archive}.gz" > "${archive}.gz.sha256"
+
+      - name: Upload image files
+        id: artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cpa-codex-login-linux-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/cpa-codex-login-linux-${{ matrix.arch }}.tar.gz
+            ${{ runner.temp }}/cpa-codex-login-linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Write download instructions
+        env:
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          {
+            echo "### Linux ${ARCH} image"
+            echo "Download: ${ARTIFACT_URL}"
+            echo
+            echo '```sh'
+            echo "sha256sum -c ${IMAGE_NAME}-linux-${ARCH}.tar.gz.sha256"
+            echo "docker load --input ${IMAGE_NAME}-linux-${ARCH}.tar.gz"
+            echo 'docker compose up -d --no-build'
+            echo '```'
+            echo 'Artifacts are retained for 3 days.'
+          } >> "$GITHUB_STEP_SUMMARY"

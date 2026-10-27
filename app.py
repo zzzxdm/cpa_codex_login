@@ -551,7 +551,7 @@ class LoginAutomation:
                 # the browser URL even when no local callback listener is running.
                 pass
             self._wait_for_login_page(page, account.email)
-            self._fill_login(page, account)
+            self._fill_login(page, account, context)
             deadline = time.time() + 180
             while time.time() < deadline and not callback_seen.is_set():
                 page = active_page[0]
@@ -614,45 +614,94 @@ class LoginAutomation:
 
     def _wait_for_login_page(self, page: Any, email: str) -> None:
         # Cloudflare may hold the page for a while; wait instead of submitting into a stale page.
-        deadline = time.time() + 60
+        deadline = time.time() + 90
+        last_wait_log = 0.0
         while time.time() < deadline:
-            if page.locator('input[type="email"], input[name="email"], input[autocomplete="username"]').count():
+            if self._find_visible(page, 'input[type="email"], input[name="email"], input[autocomplete="username"]'):
                 self._info(f"[{email}] 登录表单已就绪")
                 return
-            if "challenge" in page.url or "cf-" in page.url:
+            now = time.time()
+            if now - last_wait_log >= 5:
                 self._info(f"[{email}] 正在等待 Cloudflare 校验")
+                last_wait_log = now
             page.wait_for_timeout(1000)
-        raise RuntimeError("OpenAI 登录页面或 Cloudflare 校验超过 60 秒未就绪")
+        raise RuntimeError("OpenAI 登录页面或 Cloudflare 校验超过 90 秒未就绪")
 
-    def _fill_login(self, page: Any, account: Account) -> None:
-        email = page.locator('input[type="email"], input[name="email"], input[autocomplete="username"]').first
-        if not email.count():
+    def _fill_login(self, page: Any, account: Account, context: Any | None = None) -> None:
+        email_selector = 'input[type="email"], input[name="email"], input[autocomplete="username"]'
+        email, email_page = self._find_visible_page(page, email_selector, context)
+        if email is None:
             raise RuntimeError("未找到 OpenAI 邮箱输入框")
         email.fill(account.email)
-        button = page.locator('button[type="submit"]').first
-        if button.count():
+        button = self._find_visible(email_page, 'button[type="submit"]')
+        if button is not None:
             button.click()
         else:
             email.press("Enter")
 
-        password = page.locator('input[type="password"], input[name="password"], input[autocomplete="current-password"]').first
-        deadline = time.time() + 45
+        password_selector = 'input[type="password"], input[name="password"], input[autocomplete="current-password"]'
+        deadline = time.time() + 90
+        last_wait_log = 0.0
+        password = None
         while time.time() < deadline:
-            if password.count():
+            password, password_page = self._find_visible_page(email_page, password_selector, context)
+            if password is not None:
                 break
-            if page.get_by_text("Operation timed out").count() or page.get_by_text("糟糕，出错了").count():
+            pages = [email_page]
+            if context is not None:
+                pages = [candidate for candidate in context.pages if not candidate.is_closed()]
+            if any(self._has_text(candidate, "Operation timed out") or self._has_text(candidate, "糟糕，出错了") for candidate in pages):
                 raise RuntimeError("OpenAI 登录页面请求超时")
-            page.wait_for_timeout(1000)
-        if not password.count():
-            raise RuntimeError("提交邮箱后未出现密码输入框，可能卡在 Cloudflare 校验")
+            now = time.time()
+            if now - last_wait_log >= 5:
+                current_url = password_page.url if password_page is not None else email_page.url
+                self._info(f"[{account.email}] 邮箱已提交，等待密码页面（当前页面：{current_url[:160]}）")
+                last_wait_log = now
+            email_page.wait_for_timeout(1000)
+        if password is None:
+            raise RuntimeError("提交邮箱后未出现密码输入框，可能卡在 Cloudflare 校验或登录页未完成跳转")
 
         password.fill(account.password)
-        button = page.locator('button[type="submit"]').first
-        if button.count():
+        button = self._find_visible(password_page, 'button[type="submit"]')
+        if button is not None:
             button.click()
         else:
             password.press("Enter")
         self._info(f"[{account.email}] 邮箱和密码已自动填写并提交")
+
+    @staticmethod
+    def _find_visible(page: Any, selector: str) -> Any | None:
+        """Find a visible control in the main page or an OAuth iframe."""
+        frames = [page, *getattr(page, "frames", [])]
+        for frame in frames:
+            try:
+                locator = frame.locator(selector).first
+                if locator.count() and locator.is_visible():
+                    return locator
+            except Exception:
+                continue
+        return None
+
+    @classmethod
+    def _find_visible_page(cls, page: Any, selector: str, context: Any | None = None) -> tuple[Any | None, Any | None]:
+        pages = [page]
+        if context is not None:
+            pages = [candidate for candidate in context.pages if not candidate.is_closed()]
+            if page in pages:
+                pages.remove(page)
+            pages.insert(0, page)
+        for candidate in pages:
+            locator = cls._find_visible(candidate, selector)
+            if locator is not None:
+                return locator, candidate
+        return None, None
+
+    @staticmethod
+    def _has_text(page: Any, text: str) -> bool:
+        try:
+            return text.lower() in page.locator("body").inner_text().lower()
+        except Exception:
+            return False
 
     @staticmethod
     def _is_account_deleted(page: Any) -> bool:
